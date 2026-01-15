@@ -1,0 +1,176 @@
+
+name: temp-proxy-ngrok-pretty
+
+on:
+  workflow_dispatch:
+
+jobs:
+  proxy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Install dependencies
+        run: |
+          sudo apt update
+          sudo apt install -y dante-server curl unzip jq
+
+      - name: Generate proxy credentials (per run)
+        id: creds
+        run: |
+          USER="proxyuser"
+          PASS="$(openssl rand -base64 18 | tr -d '\n' | tr '/+' 'Aa' | cut -c1-18)"
+          echo "user=$USER" >> "$GITHUB_OUTPUT"
+          echo "pass=$PASS" >> "$GITHUB_OUTPUT"
+
+          sudo useradd "$USER" || true
+          echo "$USER:$PASS" | sudo chpasswd
+
+      - name: Configure SOCKS5 proxy (danted)
+        run: |
+          sudo tee /etc/danted.conf > /dev/null <<'EOF'
+          logoutput: stderr
+          internal: 127.0.0.1 port = 1080
+          external: eth0
+
+          method: username
+          user.notprivileged: nobody
+
+          client pass {
+            from: 0.0.0.0/0 to: 0.0.0.0/0
+          }
+
+          pass {
+            from: 0.0.0.0/0 to: 0.0.0.0/0
+            protocol: tcp udp
+          }
+          EOF
+
+      - name: Start SOCKS5 proxy
+        run: |
+          sudo danted -f /etc/danted.conf &
+          sleep 1
+
+      - name: Install ngrok
+        run: |
+          curl -s https://ngrok-agent.s3.amazonaws.com/ngrok.asc | sudo tee /etc/apt/trusted.gpg.d/ngrok.asc >/dev/null
+          echo "deb https://ngrok-agent.s3.amazonaws.com buster main" | sudo tee /etc/apt/sources.list.d/ngrok.list
+          sudo apt update
+          sudo apt install -y ngrok
+
+      - name: Set ngrok auth token
+        run: ngrok config add-authtoken ${{ secrets.NGROK_AUTHTOKEN }}
+
+      - name: Start ngrok TCP tunnel (SOCKS5)
+        id: ng
+        run: |
+          ngrok tcp 1080 --log=stdout > ngrok.log 2>&1 &
+          # wait until ngrok API is up
+          for i in $(seq 1 30); do
+            if curl -s http://127.0.0.1:4040/api/tunnels >/dev/null 2>&1; then
+              break
+            fi
+            sleep 1
+          done
+
+          JSON="$(curl -s http://127.0.0.1:4040/api/tunnels)"
+          echo "$JSON" > tunnels.json
+
+          # Extract the public tcp address e.g. tcp://x.tcp.ngrok.io:12345
+          PUBLIC_URL="$(echo "$JSON" | jq -r '.tunnels[] | select(.proto=="tcp") | .public_url' | head -n1)"
+
+          if [ -z "$PUBLIC_URL" ] || [ "$PUBLIC_URL" = "null" ]; then
+            echo "Failed to get ngrok public_url"
+            cat tunnels.json
+            exit 1
+          fi
+
+          HOST="$(echo "$PUBLIC_URL" | sed -E 's#tcp://##' | cut -d: -f1)"
+          PORT="$(echo "$PUBLIC_URL" | sed -E 's#tcp://##' | cut -d: -f2)"
+
+          echo "public_url=$PUBLIC_URL" >> "$GITHUB_OUTPUT"
+          echo "host=$HOST" >> "$GITHUB_OUTPUT"
+          echo "port=$PORT" >> "$GITHUB_OUTPUT"
+
+      - name: Get runner public IP (exit IP)
+        id: ip
+        run: |
+          IP="$(curl -s ifconfig.me || true)"
+          echo "ip=$IP" >> "$GITHUB_OUTPUT"
+
+      - name: Create pretty details files (for artifact)
+        run: |
+          mkdir -p out
+
+          cat > out/PROXY_DETAILS.md <<EOF
+          # Temporary Proxy Details (GitHub Actions + ngrok)
+
+          **Type:** SOCKS5 (Username/Password)  
+          **Tunnel:** ${{ steps.ng.outputs.public_url }}  
+          **Exit IP (what websites see):** ${{ steps.ip.outputs.ip }}
+
+          ## Connect Settings
+          - **Host:** ${{ steps.ng.outputs.host }}
+          - **Port:** ${{ steps.ng.outputs.port }}
+          - **Username:** ${{ steps.creds.outputs.user }}
+          - **Password:** ${{ steps.creds.outputs.pass }}
+
+          ## Notes
+          - This is **temporary** (runner will stop after the job ends).
+          - ngrok is only a tunnel; **the exit IP is the runner**.
+          EOF
+
+          cat > out/PROXY_DETAILS.txt <<EOF
+          TYPE=SOCKS5
+          HOST=${{ steps.ng.outputs.host }}
+          PORT=${{ steps.ng.outputs.port }}
+          USER=${{ steps.creds.outputs.user }}
+          PASS=${{ steps.creds.outputs.pass }}
+          EXIT_IP=${{ steps.ip.outputs.ip }}
+          NGROK_URL=${{ steps.ng.outputs.public_url }}
+          EOF
+
+          cat > out/PROXY_DETAILS.json <<EOF
+          {
+            "type": "socks5",
+            "host": "${{ steps.ng.outputs.host }}",
+            "port": "${{ steps.ng.outputs.port }}",
+            "username": "${{ steps.creds.outputs.user }}",
+            "password": "${{ steps.creds.outputs.pass }}",
+            "exit_ip": "${{ steps.ip.outputs.ip }}",
+            "ngrok_public_url": "${{ steps.ng.outputs.public_url }}",
+            "note": "Temporary GitHub Actions runner proxy via ngrok"
+          }
+          EOF
+
+      - name: Show details nicely in Actions Summary
+        run: |
+          {
+            echo "# ✅ Proxy Ready"
+            echo ""
+            echo "| Field | Value |"
+            echo "|---|---|"
+            echo "| Type | SOCKS5 |"
+            echo "| Host | \`${{ steps.ng.outputs.host }}\` |"
+            echo "| Port | \`${{ steps.ng.outputs.port }}\` |"
+            echo "| Username | \`${{ steps.creds.outputs.user }}\` |"
+            echo "| Password | \`${{ steps.creds.outputs.pass }}\` |"
+            echo "| Exit IP (seen by websites) | \`${{ steps.ip.outputs.ip }}\` |"
+            echo "| ngrok URL | \`${{ steps.ng.outputs.public_url }}\` |"
+            echo ""
+            echo "## Quick Test"
+            echo "Set your browser/app proxy to **SOCKS5** using Host/Port above, then visit any IP-check site."
+            echo ""
+            echo "> ⚠️ This proxy is temporary and will stop when the job ends."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload artifact (proxy details)
+        uses: actions/upload-artifact@v4
+        with:
+          name: proxy-details
+          path: out/
+
+      - name: Keep runner alive (1 hour)
+        run: sleep 3600
+
