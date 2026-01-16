@@ -10,22 +10,27 @@ jobs:
 
     steps:
     - name: Enable RDP
+      shell: cmd
       run: |
         reg add "HKLM\System\CurrentControlSet\Control\Terminal Server" /v fDenyTSConnections /t REG_DWORD /d 0 /f
         netsh advfirewall firewall set rule group="remote desktop" new enable=Yes
-        net user runneradmin TempP@ss123
+        net user runneradmin TempP@ss123 /add
+        net localgroup administrators runneradmin /add
 
     - name: Download cloudflared
+      shell: cmd
       run: |
         curl -L -o cloudflared.exe https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe
 
     - name: Start Cloudflare Tunnel (RDP)
+      shell: cmd
       env:
         TUNNEL_TOKEN: ${{ secrets.CLOUDFLARE_TUNNEL_TOKEN }}
       run: |
         start /B cloudflared.exe tunnel run --token %TUNNEL_TOKEN%
 
     - name: Keep alive
+      shell: cmd
       run: |
-        echo "RDP Ready. Do not close."
+        echo RDP Ready! Connect via rdp.ontoit.dpdns.org
         ping -t 127.0.0.1 > nul
