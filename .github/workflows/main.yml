@@ -1,4 +1,4 @@
-name: cloudflare-proxy-final-v3
+name: cloudflare-proxy-debug-v4
 
 on:
   workflow_dispatch:
@@ -7,41 +7,40 @@ jobs:
   proxy:
     runs-on: ubuntu-latest
     steps:
-      - name: Install Dante Server
-        run: |
-          sudo apt update
-          sudo apt install -y dante-server
+      - name: Install Dependencies
+        run: sudo apt update && sudo apt install -y dante-server curl net-tools
 
-      - name: Configure Dante (Ultra-Compatible)
+      - name: Configure Dante
         run: |
           sudo tee /etc/danted.conf > /dev/null <<'EOF'
           logoutput: stderr
-          # Listen on all interfaces so cloudflared can reach it
           internal: 0.0.0.0 port = 1080
           external: eth0
           socksmethod: none
           user.privileged: root
           user.unprivileged: nobody
           
-          client pass {
-              from: 0.0.0.0/0 to: 0.0.0.0/0
-              log: error
-          }
-          
-          socks pass {
-              from: 0.0.0.0/0 to: 0.0.0.0/0
-              protocol: tcp udp
-              log: error
-          }
+          client pass { from: 0.0.0.0/0 to: 0.0.0.0/0 }
+          socks pass { from: 0.0.0.0/0 to: 0.0.0.0/0 protocol: tcp udp }
           EOF
 
       - name: Start Dante Proxy
         run: |
           sudo systemctl restart danted
-          sleep 2
+          sleep 5
           sudo systemctl status danted --no-pager
-          # Test if port 1080 is actually listening
-          netstat -tuln | grep 1080
+
+      - name: ✅ Test Proxy Internally
+        run: |
+          echo "Testing if proxy is working inside the runner..."
+          # এই কমান্ডটি প্রক্সি ব্যবহার করে নিজের আইপি চেক করার চেষ্টা করবে
+          if curl -v -x socks5h://127.0.0.1:1080 http://ifconfig.me; then
+            echo "INTERNAL_PROXY_WORKING=true" >> $GITHUB_ENV
+          else
+            echo "INTERNAL_PROXY_WORKING=false" >> $GITHUB_ENV
+            echo "Error: Dante proxy is not responding inside the runner."
+            exit 1
+          fi
 
       - name: Install Cloudflared
         run: |
@@ -52,16 +51,18 @@ jobs:
         env:
           CF_TOKEN: ${{ secrets.CLOUDFLARE_TUNNEL_TOKEN }}
         run: |
-          # Use 127.0.0.1 to ensure local routing within the runner
+          # রানারের ভেতর টানেল শুরু করা
           cloudflared tunnel run --token $CF_TOKEN &
           sleep 10
 
       - name: Show Summary
         run: |
-          echo "# 🚀 Proxy Ready" >> $GITHUB_STEP_SUMMARY
-          echo "Hostname: \`ip.ontoit.dpdns.org\`" >> $GITHUB_STEP_SUMMARY
-          echo "Local Port: \`1080\`" >> $GITHUB_STEP_SUMMARY
-          echo "Auth: \`None (For Testing)\`" >> $GITHUB_STEP_SUMMARY
+          echo "# 🛠 Proxy Debug Summary" >> $GITHUB_STEP_SUMMARY
+          echo "| Check | Result |" >> $GITHUB_STEP_SUMMARY
+          echo "|---|---|" >> $GITHUB_STEP_SUMMARY
+          echo "| Internal Proxy Test | ✅ Passed |" >> $GITHUB_STEP_SUMMARY
+          echo "| Cloudflare Domain | \`ip.ontoit.dpdns.org\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Local Port | \`1080\` |" >> $GITHUB_STEP_SUMMARY
 
       - name: Keep Alive
         run: sleep 3600
