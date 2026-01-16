@@ -1,68 +1,33 @@
-name: cloudflare-proxy-debug-v4
 
-on:
-  workflow_dispatch:
-
-jobs:
-  proxy:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Install Dependencies
-        run: sudo apt update && sudo apt install -y dante-server curl net-tools
-
-      - name: Configure Dante
-        run: |
-          sudo tee /etc/danted.conf > /dev/null <<'EOF'
-          logoutput: stderr
-          internal: 0.0.0.0 port = 1080
-          external: eth0
-          socksmethod: none
-          user.privileged: root
-          user.unprivileged: nobody
-          
-          client pass { from: 0.0.0.0/0 to: 0.0.0.0/0 }
-          socks pass { from: 0.0.0.0/0 to: 0.0.0.0/0 protocol: tcp udp }
-          EOF
-
-      - name: Start Dante Proxy
-        run: |
-          sudo systemctl restart danted
-          sleep 5
-          sudo systemctl status danted --no-pager
-
-      - name: ✅ Test Proxy Internally
-        run: |
-          echo "Testing if proxy is working inside the runner..."
-          # এই কমান্ডটি প্রক্সি ব্যবহার করে নিজের আইপি চেক করার চেষ্টা করবে
-          if curl -v -x socks5h://127.0.0.1:1080 http://ifconfig.me; then
-            echo "INTERNAL_PROXY_WORKING=true" >> $GITHUB_ENV
-          else
-            echo "INTERNAL_PROXY_WORKING=false" >> $GITHUB_ENV
-            echo "Error: Dante proxy is not responding inside the runner."
-            exit 1
-          fi
-
-      - name: Install Cloudflared
-        run: |
-          curl -L --output cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
-          sudo dpkg -i cloudflared.deb
-
-      - name: Run Cloudflare Tunnel
-        env:
-          CF_TOKEN: ${{ secrets.CLOUDFLARE_TUNNEL_TOKEN }}
-        run: |
-          # রানারের ভেতর টানেল শুরু করা
-          cloudflared tunnel run --token $CF_TOKEN &
-          sleep 10
-
-      - name: Show Summary
-        run: |
-          echo "# 🛠 Proxy Debug Summary" >> $GITHUB_STEP_SUMMARY
-          echo "| Check | Result |" >> $GITHUB_STEP_SUMMARY
-          echo "|---|---|" >> $GITHUB_STEP_SUMMARY
-          echo "| Internal Proxy Test | ✅ Passed |" >> $GITHUB_STEP_SUMMARY
-          echo "| Cloudflare Domain | \`ip.ontoit.dpdns.org\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| Local Port | \`1080\` |" >> $GITHUB_STEP_SUMMARY
-
-      - name: Keep Alive
-        run: sleep 3600
+‎name: Windows RDP via Cloudflare
+‎
+‎on:
+‎  workflow_dispatch:
+‎
+‎jobs:
+‎  rdp:
+‎    runs-on: windows-latest
+‎    timeout-minutes: 360
+‎
+‎    steps:
+‎    - name: Enable RDP
+‎      run: |
+‎        reg add "HKLM\System\CurrentControlSet\Control\Terminal Server" /v fDenyTSConnections /t REG_DWORD /d 0 /f
+‎        netsh advfirewall firewall set rule group="remote desktop" new enable=Yes
+‎        net user runneradmin TempP@ss123
+‎
+‎    - name: Download cloudflared
+‎      run: |
+‎        curl -L -o cloudflared.exe https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe
+‎
+‎    - name: Start Cloudflare Tunnel (RDP)
+‎      env:
+‎        TUNNEL_TOKEN: ${{ secrets.CLOUDFLARE_TUNNEL_TOKEN }}
+‎      run: |
+‎        start /B cloudflared.exe tunnel run --token %TUNNEL_TOKEN%
+‎
+‎    - name: Keep alive
+‎      run: |
+‎        echo "RDP Ready. Do not close."
+‎        ping -t 127.0.0.1
+‎
