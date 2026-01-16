@@ -1,4 +1,4 @@
-name: temp-proxy-cloudflare-pretty
+name: cloudflare-proxy-final-v3
 
 on:
   workflow_dispatch:
@@ -6,90 +6,62 @@ on:
 jobs:
   proxy:
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-
     steps:
-      - name: Install dependencies
+      - name: Install Dante Server
         run: |
           sudo apt update
-          sudo apt install -y dante-server curl unzip jq
-          
-      - name: Generate proxy credentials
-        id: creds
-        run: |
-          USER="proxyuser"
-          PASS="$(openssl rand -base64 12 | tr -d '\n' | tr '/+' 'Aa')"
-          echo "user=$USER" >> "$GITHUB_OUTPUT"
-          echo "pass=$PASS" >> "$GITHUB_OUTPUT"
-          sudo useradd -m -s /usr/sbin/nologin "$USER" || true
-          echo "$USER:$PASS" | sudo chpasswd
-          
-      - name: Configure SOCKS5 proxy (danted)
+          sudo apt install -y dante-server
+
+      - name: Configure Dante (Ultra-Compatible)
         run: |
           sudo tee /etc/danted.conf > /dev/null <<'EOF'
           logoutput: stderr
-          internal: 127.0.0.1 port = 1080
+          # Listen on all interfaces so cloudflared can reach it
+          internal: 0.0.0.0 port = 1080
           external: eth0
-          socksmethod: username
+          socksmethod: none
           user.privileged: root
           user.unprivileged: nobody
           
           client pass {
-            from: 0.0.0.0/0 to: 0.0.0.0/0
+              from: 0.0.0.0/0 to: 0.0.0.0/0
+              log: error
           }
           
           socks pass {
-            from: 0.0.0.0/0 to: 0.0.0.0/0
-            protocol: tcp udp
-            socksmethod: username
+              from: 0.0.0.0/0 to: 0.0.0.0/0
+              protocol: tcp udp
+              log: error
           }
           EOF
 
-      - name: Start SOCKS5 proxy
+      - name: Start Dante Proxy
         run: |
           sudo systemctl restart danted
           sleep 2
+          sudo systemctl status danted --no-pager
+          # Test if port 1080 is actually listening
+          netstat -tuln | grep 1080
 
-      - name: Install Cloudflare Tunnel (cloudflared)
+      - name: Install Cloudflared
         run: |
           curl -L --output cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
           sudo dpkg -i cloudflared.deb
 
-      - name: Start Cloudflare Tunnel
+      - name: Run Cloudflare Tunnel
         env:
-          CLOUDFLARE_TUNNEL_TOKEN: ${{ secrets.CLOUDFLARE_TUNNEL_TOKEN }}
+          CF_TOKEN: ${{ secrets.CLOUDFLARE_TUNNEL_TOKEN }}
         run: |
-          # রানার ব্যাকগ্রাউন্ডে টানেল স্টার্ট করবে
-          cloudflared tunnel run --token $CLOUDFLARE_TUNNEL_TOKEN &
-          sleep 5
+          # Use 127.0.0.1 to ensure local routing within the runner
+          cloudflared tunnel run --token $CF_TOKEN &
+          sleep 10
 
-      - name: Get runner public IP
-        id: ip
+      - name: Show Summary
         run: |
-          IP="$(curl -s ifconfig.me || true)"
-          echo "ip=$IP" >> "$GITHUB_OUTPUT"
+          echo "# 🚀 Proxy Ready" >> $GITHUB_STEP_SUMMARY
+          echo "Hostname: \`ip.ontoit.dpdns.org\`" >> $GITHUB_STEP_SUMMARY
+          echo "Local Port: \`1080\`" >> $GITHUB_STEP_SUMMARY
+          echo "Auth: \`None (For Testing)\`" >> $GITHUB_STEP_SUMMARY
 
-      - name: Show Details in Actions Summary
-        run: |
-          {
-            echo "# ✅ Cloudflare Proxy Tunnel Active"
-            echo ""
-            echo "| Field | Value |"
-            echo "|---|---|"
-            echo "| **Type** | SOCKS5 |"
-            echo "| **Internal Port** | \`1080\` |"
-            echo "| **Username** | \`${{ steps.creds.outputs.user }}\` |"
-            echo "| **Password** | \`${{ steps.creds.outputs.pass }}\` |"
-            echo "| **Exit IP** | \`${{ steps.ip.outputs.ip }}\` |"
-            echo ""
-            echo "## 🛠 How to Connect"
-            echo "Since this is a Cloudflare TCP Tunnel, you must run this on your local machine to use the proxy:"
-            echo "\`\`\`bash"
-            echo "cloudflared access tcp --hostname YOUR_DOMAIN.com --url localhost:1080"
-            echo "\`\`\`"
-            echo "Then set your proxy to \`localhost:1080\` with the username/password above."
-          } >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Keep runner alive (1 hour)
+      - name: Keep Alive
         run: sleep 3600
