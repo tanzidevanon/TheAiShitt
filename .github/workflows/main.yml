@@ -14,8 +14,8 @@ jobs:
       run: |
         reg add "HKLM\System\CurrentControlSet\Control\Terminal Server" /v fDenyTSConnections /t REG_DWORD /d 0 /f
         netsh advfirewall firewall set rule group="remote desktop" new enable=Yes
-        net user runneradmin TempP@ss123 /add
-        net localgroup administrators runneradmin /add
+        :: এখানে /add বাদ দেওয়া হয়েছে কারণ ইউজার আগে থেকেই আছে
+        net user runneradmin TempP@ss123
 
     - name: Download cloudflared
       shell: cmd
